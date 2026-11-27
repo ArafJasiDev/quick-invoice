@@ -11,8 +11,7 @@ import {
   inputClassName,
   primaryButtonClassName,
 } from "@/components/ui";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import { isValidEmail } from "@/lib/validation";
+import { isValidEmail, type FieldErrors } from "@/lib/validation";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -22,19 +21,17 @@ export default function SignupPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [infoMessage, setInfoMessage] = useState<string | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<{
-    businessName?: string;
-    email?: string;
-    password?: string;
-  }>({});
+  const [isDuplicate, setIsDuplicate] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<
+    FieldErrors<"businessName" | "email" | "password">
+  >({});
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setFormError(null);
-    setInfoMessage(null);
+    setIsDuplicate(false);
 
-    const nextErrors: { businessName?: string; email?: string; password?: string } = {};
+    const nextErrors: FieldErrors<"businessName" | "email" | "password"> = {};
     if (!businessName.trim()) {
       nextErrors.businessName = "Enter your business name.";
     }
@@ -54,30 +51,37 @@ export default function SignupPage() {
 
     setSubmitting(true);
     try {
-      const supabase = createSupabaseBrowserClient();
-      const { data, error } = await supabase.auth.signUp({
-        email: email.trim(),
-        password,
-        options: {
-          data: {
-            business_name: businessName.trim(),
-          },
-        },
+      const normalizedEmail = email.trim().toLowerCase();
+      const res = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          businessName: businessName.trim(),
+          email: normalizedEmail,
+          password,
+        }),
       });
 
-      if (error) {
-        setFormError(error.message);
+      const json = (await res.json()) as {
+        ok?: boolean;
+        email?: string;
+        error?: string;
+        duplicate?: boolean;
+        fieldErrors?: FieldErrors<"businessName" | "email" | "password">;
+      };
+
+      if (!res.ok || !json.ok) {
+        if (json.fieldErrors) setFieldErrors(json.fieldErrors);
+        if (json.duplicate || res.status === 409) setIsDuplicate(true);
+        setFormError(json.error ?? "Could not create account.");
         return;
       }
 
-      if (data.session) {
-        router.push("/dashboard");
-        router.refresh();
-      } else {
-        setInfoMessage(
-          "Account created! Check your email inbox to confirm your address, then sign in."
-        );
-      }
+      const targetParams = new URLSearchParams({
+        email: json.email ?? normalizedEmail,
+        created: "1",
+      });
+      router.push(`/login?${targetParams.toString()}`);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Could not create account.");
     } finally {
@@ -103,8 +107,19 @@ export default function SignupPage() {
 
         <Card className="p-6">
           <form onSubmit={handleSubmit} noValidate className="space-y-4">
-            {formError ? <Alert variant="error">{formError}</Alert> : null}
-            {infoMessage ? <Alert variant="success">{infoMessage}</Alert> : null}
+            {formError ? (
+              <Alert variant="error">
+                <p>{formError}</p>
+                {isDuplicate ? (
+                  <Link
+                    href={`/login?email=${encodeURIComponent(email.trim().toLowerCase())}`}
+                    className="mt-1.5 inline-block text-xs font-semibold underline"
+                  >
+                    Go to Sign in →
+                  </Link>
+                ) : null}
+              </Alert>
+            ) : null}
 
             <Field
               id="businessName"
@@ -145,6 +160,7 @@ export default function SignupPage() {
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);
+                  setIsDuplicate(false);
                   if (fieldErrors.email) setFieldErrors((p) => ({ ...p, email: undefined }));
                 }}
                 aria-invalid={Boolean(fieldErrors.email)}
